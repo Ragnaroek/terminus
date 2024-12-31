@@ -65,11 +65,8 @@ impl App {
         for trace in &trace_data {
             let duration = trace.fields.time_busy + trace.fields.time_idle;
             let millis = duration.as_millis_f64();
-            if millis == 1490.0814 {
-                println!("trace = {:?}", trace.span.id);
-            }
             max = max.max(millis);
-            data.push((trace.span.id.unwrap() as f64, millis));
+            data.push((trace.span.id.unwrap() as f64, millis.log10()));
         }
 
         App {
@@ -113,20 +110,21 @@ impl Widget for &mut App {
                 .data(&self.state.data),
         ];
 
+        let len_str = self.state.data.len().to_string();
         // Create the X axis and define its properties
         let x_axis = Axis::default()
-            .title("X Axis".red())
+            .title("frame".red())
             .style(Style::default().white())
-            .bounds([0.0, 200.0])
-            .labels(["0.0", "200.0"]);
+            .bounds([0.0, self.state.data.len() as f64])
+            .labels(["0.0", &len_str]);
 
-        let max_str = self.state.max.to_string();
+        let max_str = self.state.max.ceil().to_string();
 
         // Create the Y axis and define its properties
         let y_axis = Axis::default()
-            .title("Y Axis".red())
+            .title("ms (log scale)".red())
             .style(Style::default().white())
-            .bounds([0.0, self.state.max])
+            .bounds([0.0, self.state.max.log10()])
             .labels(["0.0", &max_str]);
 
         // Create the chart and link all the parts together

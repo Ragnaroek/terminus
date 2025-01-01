@@ -17,7 +17,7 @@ use ratatui::{
     symbols,
 };
 use std::io::{self, stdout};
-use trace::{Trace, read_trace_file};
+use trace::{FrameTrace, Trace, read_trace_file};
 
 #[derive(Parser)]
 struct Cli {
@@ -29,13 +29,26 @@ enum InputMode {
     Editing,
 }
 
+struct FrameState {
+    start: usize,
+    end: usize,
+}
+
+struct DetailState {
+    frame_trace: FrameTrace,
+}
+
 struct State {
     max: f64,
+    trace_data: Vec<FrameTrace>,
     data: Vec<(f64, f64)>,
 
     input: String,
     input_mode: InputMode,
     character_index: usize,
+
+    frame_state: Option<FrameState>,
+    detail_state: Option<DetailState>,
 }
 
 struct App {
@@ -65,23 +78,26 @@ fn main() -> Result<(), String> {
 }
 
 impl App {
-    fn new(trace_data: Vec<Trace>) -> App {
+    fn new(trace_data: Vec<FrameTrace>) -> App {
         let mut data = Vec::with_capacity(trace_data.len());
         let mut max: f64 = 0.0;
-        for trace in &trace_data {
-            let duration = trace.fields.time_busy + trace.fields.time_idle;
+        for frame_trace in &trace_data {
+            let duration = frame_trace.trace.total_duration();
             let millis = duration.as_millis_f64();
             max = max.max(millis);
-            data.push((trace.span.id.unwrap() as f64, millis.log10()));
+            data.push((frame_trace.trace.span.id.unwrap() as f64, millis.log10()));
         }
 
         App {
             state: State {
+                trace_data,
                 data,
                 max,
                 input: String::new(),
                 input_mode: InputMode::Normal,
                 character_index: 0,
+                frame_state: None,
+                detail_state: None,
             },
         }
     }
@@ -129,15 +145,67 @@ impl App {
         self.move_cursor_right();
     }
 
-    fn submit_command(&mut self) -> bool {
+    fn exec_command(&mut self) -> bool {
         if self.state.input == ":q" {
             return true;
+        }
+
+        let input_cmd = self.state.input.clone();
+
+        // frame commands
+        if self.state.input.starts_with(":f") {
+            let mut iter = input_cmd.split_whitespace();
+            iter.next();
+            if let Some(str) = iter.next() {
+                if str == "all" {
+                    self.state.frame_state = None
+                } else if str == "inspect" {
+                    self.exec_frame_inspect(iter.next());
+                } else {
+                    let s: Vec<&str> = str.split("..").collect();
+                    if s.len() == 2 {
+                        let lower: usize = s[0].parse().unwrap();
+                        let upper: usize = s[1].parse().unwrap();
+                        self.state.frame_state = Some(FrameState {
+                            start: lower,
+                            end: upper,
+                        });
+                    }
+                }
+            }
         }
 
         self.state.input.clear();
         self.state.character_index = 0;
 
         false
+    }
+
+    fn exec_frame_inspect(&mut self, cmd: Option<&str>) {
+        if let Some("max") = cmd {
+            let mut max: f64 = 0.0;
+            //let mut max_frame_id = 0;
+            let mut max_trace = &self.state.trace_data[0];
+            for frame_trace in &self.state.trace_data {
+                let duration = frame_trace.trace.total_duration();
+                let millis = duration.as_millis_f64();
+                if millis > max {
+                    max = millis;
+                    //max_frame_id = trace.span.id.unwrap();
+                    max_trace = frame_trace;
+                }
+            }
+
+            let mut detail_state = DetailState {
+                frame_trace: max_trace.clone(),
+            };
+            detail_state
+                .frame_trace
+                .child_traces
+                .sort_by(|a, b| b.total_duration().partial_cmp(&a.total_duration()).unwrap());
+
+            self.state.detail_state = Some(detail_state);
+        }
     }
 
     fn run(&mut self, mut terminal: Terminal<impl Backend>) -> io::Result<()> {
@@ -154,7 +222,7 @@ impl App {
                     },
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                         KeyCode::Enter => {
-                            if self.submit_command() {
+                            if self.exec_command() {
                                 return Ok(());
                             }
                         }
@@ -197,13 +265,19 @@ impl Widget for &mut App {
                 .data(&self.state.data),
         ];
 
-        let len_str = self.state.data.len().to_string();
+        let mut start = 0.0;
+        let mut end = self.state.data.len() as f64;
+        if let Some(frame_bounds) = &self.state.frame_state {
+            start = frame_bounds.start as f64;
+            end = frame_bounds.end as f64;
+        }
+
         // Create the X axis and define its properties
         let x_axis = Axis::default()
             .title("frame".red())
             .style(Style::default().white())
-            .bounds([0.0, self.state.data.len() as f64])
-            .labels(["0.0", &len_str]);
+            .bounds([start, end])
+            .labels([start.to_string(), end.to_string()]);
 
         let max_str = self.state.max.ceil().to_string();
 
@@ -221,7 +295,28 @@ impl Widget for &mut App {
             .y_axis(y_axis)
             .render(frame_bar_area, buf);
 
-        Paragraph::new("TODO Detail view")
+        let detail_text = if let Some(detail_state) = &self.state.detail_state {
+            let mut s = String::new();
+            s.push_str(&format!(
+                "frame id={}, {} - {:?}\n",
+                detail_state.frame_trace.trace.span.id.unwrap(),
+                detail_state.frame_trace.trace.target,
+                detail_state.frame_trace.trace.total_duration()
+            ));
+            for child in &detail_state.frame_trace.child_traces {
+                s.push_str(&format!(
+                    "  {}/{} - {:?}\n",
+                    child.target,
+                    child.span.name,
+                    child.total_duration()
+                ));
+            }
+            s
+        } else {
+            "No frame selected".to_string()
+        };
+
+        Paragraph::new(detail_text)
             .block(Block::bordered().title("Frame Detail"))
             .render(detail_area, buf);
 

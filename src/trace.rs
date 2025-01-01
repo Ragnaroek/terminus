@@ -23,7 +23,7 @@ use fundu_core::time::{Multiplier, TimeUnit, TimeUnitsLike};
 "spans":[]}
 */
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Fields {
     pub message: String,
 
@@ -36,20 +36,32 @@ pub struct Fields {
     pub time_idle: Duration,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Span {
     pub id: Option<u64>,
     pub name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Trace {
     pub target: String,
     pub fields: Fields,
     pub span: Span,
 }
 
-pub fn read_trace_file(file: &Path) -> Result<Vec<Trace>, String> {
+impl Trace {
+    pub fn total_duration(&self) -> Duration {
+        self.fields.time_busy + self.fields.time_idle
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct FrameTrace {
+    pub trace: Trace,
+    pub child_traces: Vec<Trace>,
+}
+
+pub fn read_trace_file(file: &Path) -> Result<Vec<FrameTrace>, String> {
     let file = File::open(file).map_err(|e| e.to_string())?;
     let lines = BufReader::new(file).lines();
 
@@ -60,9 +72,16 @@ pub fn read_trace_file(file: &Path) -> Result<Vec<Trace>, String> {
     }
 
     let mut result = Vec::new();
+    let mut child_traces = Vec::new();
     for trace in raw_traces {
         if trace.span.name == "frame" {
-            result.push(trace);
+            result.push(FrameTrace {
+                trace,
+                child_traces,
+            });
+            child_traces = Vec::new();
+        } else {
+            child_traces.push(trace);
         }
     }
 

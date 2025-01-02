@@ -205,6 +205,12 @@ impl App {
                 .sort_by(|a, b| b.total_duration().partial_cmp(&a.total_duration()).unwrap());
 
             self.state.detail_state = Some(detail_state);
+        } else if let Some(str) = cmd {
+            // must be a number, try to parse it
+            let frame_id: u64 = str.parse().expect("frame_id");
+            self.state.detail_state = Some(DetailState {
+                frame_trace: self.state.trace_data[frame_id as usize].clone(),
+            })
         }
     }
 
